@@ -1,0 +1,6 @@
+{
+  "name": "쿠팡 배송비 보상신청 양식",
+  "description": "쿠팡 배송비 보상신청을 위한 5단계 증빙(보상신청내용, 포장상태, 운송장, 문자전송내용, 문자전송 자세히) 입력 및 이미지 저장 도구",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
