@@ -68,7 +68,7 @@ export const SavedClaimsView: React.FC<SavedClaimsViewProps> = ({
             type="text"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="성함, 송장번호, 보상신청내용으로 검색"
+            placeholder="성함, 상품명, 보상신청내용으로 검색"
             className="w-full rounded-md border border-slate-200 bg-white pl-9 pr-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none"
           />
         </div>
@@ -105,7 +105,7 @@ export const SavedClaimsView: React.FC<SavedClaimsViewProps> = ({
             <table className="w-full border-collapse text-left text-sm">
               <thead>
                 <tr className="border-b border-slate-200 bg-slate-50 text-xs font-semibold text-slate-600">
-                  <th className="py-3 px-4">성함 / 송장번호</th>
+                  <th className="py-3 px-4">성함 / 상품명</th>
                   <th className="py-3 px-4">1번 보상신청내용</th>
                   <th className="py-3 px-4 text-right whitespace-nowrap">첨부 사진</th>
                   <th className="py-3 px-4 whitespace-nowrap">저장 일시</th>
@@ -114,9 +114,13 @@ export const SavedClaimsView: React.FC<SavedClaimsViewProps> = ({
               </thead>
               <tbody className="divide-y divide-slate-200">
                 {filtered.map((item) => {
-                  const attachedCount = IMAGE_SLOTS.filter(
-                    (s) => Boolean(item.images[s.key])
+                  const attachedSlots = IMAGE_SLOTS.filter(
+                    (s) => item.images[s.key].length > 0
                   ).length;
+                  const totalPhotos = IMAGE_SLOTS.reduce(
+                    (sum, s) => sum + item.images[s.key].length,
+                    0
+                  );
                   const isEditing = item.id === currentId;
 
                   return (
@@ -133,8 +137,8 @@ export const SavedClaimsView: React.FC<SavedClaimsViewProps> = ({
                             </span>
                           )}
                         </div>
-                        <div className="mt-0.5 font-mono text-xs text-slate-500 tabular-nums">
-                          {item.orderNumber ? `송장번호 ${item.orderNumber}` : '송장번호 미입력'}
+                        <div className="mt-0.5 text-xs text-slate-500">
+                          {item.orderNumber ? `상품명: ${item.orderNumber}` : '상품명 미입력'}
                         </div>
                       </td>
                       <td className="py-3.5 px-4 align-top max-w-xs">
@@ -143,7 +147,9 @@ export const SavedClaimsView: React.FC<SavedClaimsViewProps> = ({
                         </p>
                       </td>
                       <td className="py-3.5 px-4 align-top text-right font-mono text-xs text-slate-700 tabular-nums whitespace-nowrap">
-                        {attachedCount} / 4
+                        {totalPhotos > attachedSlots
+                          ? `${attachedSlots} / 4 (${totalPhotos}장)`
+                          : `${attachedSlots} / 4`}
                       </td>
                       <td className="py-3.5 px-4 align-top font-mono text-xs text-slate-500 tabular-nums whitespace-nowrap">
                         {formatDateTime(item.updatedAt)}

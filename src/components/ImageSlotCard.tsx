@@ -1,9 +1,12 @@
 import React, { useRef, useState } from 'react';
 import {
+  ArrowDown,
+  ArrowUp,
   ClipboardPaste,
   FolderOpen,
   ImagePlus,
   Maximize2,
+  Plus,
   RefreshCw,
   RotateCw,
   Trash2,
@@ -15,17 +18,17 @@ import { readImageFileAsAsset, rotateImageAsset } from '../utils/canvasExporter'
 
 interface ImageSlotCardProps {
   slot: SlotDefinition;
-  asset: ImageAsset | null;
+  assets: ImageAsset[];
   isActive: boolean;
   onFocusSlot: () => void;
-  onChange: (asset: ImageAsset | null) => void;
+  onChange: (updater: ImageAsset[] | ((prev: ImageAsset[]) => ImageAsset[])) => void;
   onPreviewZoom: (asset: ImageAsset, label: string) => void;
   onNotify: (message: string, type?: 'info' | 'error') => void;
 }
 
 export const ImageSlotCard: React.FC<ImageSlotCardProps> = ({
   slot,
-  asset,
+  assets,
   isActive,
   onFocusSlot,
   onChange,
@@ -33,17 +36,40 @@ export const ImageSlotCard: React.FC<ImageSlotCardProps> = ({
   onNotify,
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const replaceInputRef = useRef<HTMLInputElement>(null);
+  const replaceIndexRef = useRef<number | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [isBusy, setIsBusy] = useState(false);
   const [previewScale, setPreviewScale] = useState<number>(100);
 
-  const handleFile = async (file: File) => {
+  const handleAddFiles = async (files: File[]) => {
+    const imageFiles = files.filter((file) => file.type.startsWith('image/'));
+    if (imageFiles.length === 0) {
+      onNotify('이미지 파일(JPG, PNG, WEBP 등)만 업로드할 수 있습니다.', 'error');
+      return;
+    }
+
     setIsBusy(true);
     try {
-      const nextAsset = await readImageFileAsAsset(file);
-      setPreviewScale(100);
-      onChange(nextAsset);
-      onNotify(`${slot.stepNumber}번 ${slot.headerLabel} 사진이 등록되었습니다.`);
+      const nextAssets: ImageAsset[] = [];
+      for (const file of imageFiles) {
+        const asset = await readImageFileAsAsset(file);
+        nextAssets.push(asset);
+      }
+
+      onChange((prev) => [...prev, ...nextAssets]);
+      if (nextAssets.length === 1) {
+        const totalAfter = assets.length + 1;
+        onNotify(
+          totalAfter > 1
+            ? `${slot.stepNumber}번 ${slot.headerLabel} 사진이 추가되었습니다. (${totalAfter}번째)`
+            : `${slot.stepNumber}번 ${slot.headerLabel} 사진이 등록되었습니다.`
+        );
+      } else {
+        onNotify(
+          `${slot.stepNumber}번 ${slot.headerLabel} 사진 ${nextAssets.length}장이 순서대로 추가되었습니다.`
+        );
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : '이미지 등록에 실패했습니다.';
       onNotify(msg, 'error');
@@ -52,10 +78,34 @@ export const ImageSlotCard: React.FC<ImageSlotCardProps> = ({
     }
   };
 
+  const handleReplaceFile = async (file: File, index: number) => {
+    setIsBusy(true);
+    try {
+      const replaced = await readImageFileAsAsset(file);
+      onChange((prev) => prev.map((item, idx) => (idx === index ? replaced : item)));
+      onNotify(`${slot.stepNumber}번 ${slot.headerLabel} ${index + 1}번째 사진이 교체되었습니다.`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '이미지 교체에 실패했습니다.';
+      onNotify(msg, 'error');
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files ? Array.from(e.target.files) : [];
+    if (files.length > 0) {
+      void handleAddFiles(files);
+    }
+    e.target.value = '';
+  };
+
+  const handleReplaceInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
-      void handleFile(file);
+    const targetIndex = replaceIndexRef.current;
+    replaceIndexRef.current = null;
+    if (file && targetIndex !== null) {
+      void handleReplaceFile(file, targetIndex);
     }
     e.target.value = '';
   };
@@ -65,25 +115,28 @@ export const ImageSlotCard: React.FC<ImageSlotCardProps> = ({
     e.stopPropagation();
     setIsDragging(false);
     onFocusSlot();
-    const file = e.dataTransfer.files?.[0];
-    if (file) {
-      void handleFile(file);
+    const files = e.dataTransfer.files ? Array.from(e.dataTransfer.files) : [];
+    if (files.length > 0) {
+      void handleAddFiles(files);
     }
   };
 
   const handlePasteEvent = (e: React.ClipboardEvent<HTMLDivElement>) => {
     const items = e.clipboardData?.items;
     if (!items) return;
+    const files: File[] = [];
     for (let i = 0; i < items.length; i++) {
       const item = items[i];
       if (item.type.startsWith('image/')) {
         const file = item.getAsFile();
         if (file) {
-          e.preventDefault();
-          void handleFile(file);
-          return;
+          files.push(file);
         }
       }
+    }
+    if (files.length > 0) {
+      e.preventDefault();
+      void handleAddFiles(files);
     }
   };
 
@@ -96,15 +149,20 @@ export const ImageSlotCard: React.FC<ImageSlotCardProps> = ({
     }
     try {
       const clipboardItems = await navigator.clipboard.read();
+      const files: File[] = [];
       for (const item of clipboardItems) {
         const imageType = item.types.find((t) => t.startsWith('image/'));
         if (imageType) {
           const blob = await item.getType(imageType);
           const ext = imageType.split('/')[1] || 'png';
-          const file = new File([blob], `${slot.key}_paste.${ext}`, { type: imageType });
-          await handleFile(file);
-          return;
+          files.push(
+            new File([blob], `${slot.key}_paste_${Date.now()}.${ext}`, { type: imageType })
+          );
         }
+      }
+      if (files.length > 0) {
+        await handleAddFiles(files);
+        return;
       }
       onNotify('클립보드에 복사된 이미지가 없습니다. 스크린샷을 먼저 복사해 주세요.', 'error');
     } catch {
@@ -112,18 +170,41 @@ export const ImageSlotCard: React.FC<ImageSlotCardProps> = ({
     }
   };
 
-  const handleRotate = async (e: React.MouseEvent) => {
+  const handleRotateAt = async (e: React.MouseEvent, index: number) => {
     e.stopPropagation();
-    if (!asset || isBusy) return;
+    const target = assets[index];
+    if (!target || isBusy) return;
     setIsBusy(true);
     try {
-      const rotated = await rotateImageAsset(asset);
-      onChange(rotated);
+      const rotated = await rotateImageAsset(target);
+      onChange((prev) => prev.map((item, idx) => (idx === index ? rotated : item)));
     } catch {
       onNotify('이미지 회전에 실패했습니다.', 'error');
     } finally {
       setIsBusy(false);
     }
+  };
+
+  const handleMove = (e: React.MouseEvent, index: number, direction: -1 | 1) => {
+    e.stopPropagation();
+    const nextIndex = index + direction;
+    if (nextIndex < 0 || nextIndex >= assets.length) return;
+    onChange((prev) => {
+      const copy = [...prev];
+      const [moved] = copy.splice(index, 1);
+      copy.splice(nextIndex, 0, moved);
+      return copy;
+    });
+  };
+
+  const handleDeleteAt = (e: React.MouseEvent, index: number) => {
+    e.stopPropagation();
+    onChange((prev) => prev.filter((_, idx) => idx !== index));
+    onNotify(
+      assets.length > 1
+        ? `${slot.stepNumber}번 ${slot.headerLabel} ${index + 1}번째 사진이 삭제되었습니다.`
+        : `${slot.stepNumber}번 ${slot.headerLabel} 사진이 삭제되었습니다.`
+    );
   };
 
   return (
@@ -160,9 +241,9 @@ export const ImageSlotCard: React.FC<ImageSlotCardProps> = ({
               <span className="text-xs text-slate-500 hidden sm:inline">
                 {slot.description}
               </span>
-              {asset && (
-                <span className="rounded bg-slate-100 px-1.5 py-0.5 text-xs text-slate-600 font-mono tabular-nums whitespace-nowrap">
-                  {asset.width} × {asset.height}px
+              {assets.length > 0 && (
+                <span className="rounded bg-blue-50 border border-blue-200 px-1.5 py-0.5 text-xs text-blue-700 font-semibold tabular-nums whitespace-nowrap">
+                  {assets.length}장
                 </span>
               )}
             </div>
@@ -178,10 +259,14 @@ export const ImageSlotCard: React.FC<ImageSlotCardProps> = ({
               fileInputRef.current?.click();
             }}
             className="inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 hover:text-slate-900 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-            title="컴퓨터에서 이미지 파일 선택"
+            title="컴퓨터에서 이미지 파일 선택 (여러 장 선택 가능)"
           >
-            <FolderOpen className="h-3.5 w-3.5" />
-            {asset ? '파일 교체' : '파일 선택'}
+            {assets.length > 0 ? (
+              <Plus className="h-3.5 w-3.5" />
+            ) : (
+              <FolderOpen className="h-3.5 w-3.5" />
+            )}
+            {assets.length > 0 ? '사진 추가' : '파일 선택'}
           </button>
 
           <button
@@ -191,73 +276,47 @@ export const ImageSlotCard: React.FC<ImageSlotCardProps> = ({
             title="클립보드에서 이미지 붙여넣기"
           >
             <ClipboardPaste className="h-3.5 w-3.5" />
-            붙여넣기
+            {assets.length > 0 ? '붙여넣기 추가' : '붙여넣기'}
           </button>
 
-          {asset && (
-            <>
-              <div className="inline-flex items-center rounded-md border border-slate-200 bg-slate-50 p-0.5">
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setPreviewScale((prev) => Math.max(100, prev - 25));
-                  }}
-                  disabled={previewScale <= 100}
-                  className="rounded px-1.5 py-1 text-xs font-medium text-slate-700 hover:bg-white disabled:opacity-40 cursor-pointer"
-                  title="축소"
-                >
-                  <ZoomOut className="h-3.5 w-3.5" />
-                </button>
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setPreviewScale(100);
-                  }}
-                  className="px-1.5 text-xs font-mono font-semibold text-slate-700 cursor-pointer"
-                  title="가로폭 맞춤 (100%)"
-                >
-                  {previewScale}%
-                </button>
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setPreviewScale((prev) => Math.min(250, prev + 25));
-                  }}
-                  disabled={previewScale >= 250}
-                  className="rounded px-1.5 py-1 text-xs font-medium text-slate-700 hover:bg-white disabled:opacity-40 cursor-pointer"
-                  title="글자 크게 보기 (확대)"
-                >
-                  <ZoomIn className="h-3.5 w-3.5" />
-                </button>
-              </div>
-
+          {assets.length > 0 && (
+            <div className="inline-flex items-center rounded-md border border-slate-200 bg-slate-50 p-0.5">
               <button
                 type="button"
-                onClick={handleRotate}
-                disabled={isBusy}
-                className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 hover:text-slate-900 transition-colors whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
-                title="시계방향 90도 회전"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setPreviewScale((prev) => Math.max(100, prev - 25));
+                }}
+                disabled={previewScale <= 100}
+                className="rounded px-1.5 py-1 text-xs font-medium text-slate-700 hover:bg-white disabled:opacity-40 cursor-pointer"
+                title="축소"
               >
-                <RotateCw className="h-3.5 w-3.5" />
-                회전
+                <ZoomOut className="h-3.5 w-3.5" />
               </button>
               <button
                 type="button"
                 onClick={(e) => {
                   e.stopPropagation();
-                  onChange(null);
-                  onNotify(`${slot.stepNumber}번 ${slot.headerLabel} 사진이 삭제되었습니다.`);
+                  setPreviewScale(100);
                 }}
-                className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50 hover:border-red-200 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-                title="사진 삭제"
+                className="px-1.5 text-xs font-mono font-semibold text-slate-700 cursor-pointer"
+                title="가로폭 맞춤 (100%)"
               >
-                <Trash2 className="h-3.5 w-3.5" />
-                삭제
+                {previewScale}%
               </button>
-            </>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setPreviewScale((prev) => Math.min(250, prev + 25));
+                }}
+                disabled={previewScale >= 250}
+                className="rounded px-1.5 py-1 text-xs font-medium text-slate-700 hover:bg-white disabled:opacity-40 cursor-pointer"
+                title="글자 크게 보기 (확대)"
+              >
+                <ZoomIn className="h-3.5 w-3.5" />
+              </button>
+            </div>
           )}
         </div>
       </div>
@@ -266,42 +325,181 @@ export const ImageSlotCard: React.FC<ImageSlotCardProps> = ({
         ref={fileInputRef}
         type="file"
         accept="image/*"
+        multiple
         onChange={handleInputChange}
         className="hidden"
       />
+      <input
+        ref={replaceInputRef}
+        type="file"
+        accept="image/*"
+        onChange={handleReplaceInputChange}
+        className="hidden"
+      />
 
-      {asset ? (
-        <div className="mt-4">
-          <div className="group relative overflow-auto rounded-md border border-slate-200 bg-slate-50">
-            <img
-              src={asset.dataUrl}
-              alt={`${slot.stepNumber}번 ${slot.headerLabel} 첨부 이미지`}
-              referrerPolicy="no-referrer"
-              onClick={(e) => {
-                e.stopPropagation();
-                onPreviewZoom(asset, `${slot.stepNumber}. ${slot.headerLabel}`);
-              }}
-              style={{
-                width: `${previewScale}%`,
-                maxWidth: previewScale > 100 ? 'none' : '100%',
-              }}
-              className="h-auto object-contain block cursor-zoom-in mx-auto"
-            />
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                onPreviewZoom(asset, `${slot.stepNumber}. ${slot.headerLabel}`);
-              }}
-              className="sticky right-2.5 bottom-2.5 float-right m-2.5 inline-flex items-center gap-1 rounded-md bg-slate-900/85 px-3 py-1.5 text-xs font-medium text-white opacity-95 hover:opacity-100 transition-opacity cursor-pointer shadow-sm"
+      {assets.length > 0 ? (
+        <div className="mt-4 space-y-4">
+          {assets.map((asset, index) => (
+            <div
+              key={`${asset.updatedAt}_${index}`}
+              className="rounded-md border border-slate-200 bg-slate-50/50 overflow-hidden"
             >
-              <Maximize2 className="h-3.5 w-3.5" />
-              전체화면 크게 보기
-            </button>
-          </div>
-          <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
-            <span className="truncate max-w-[320px] font-medium text-slate-600">{asset.fileName}</span>
-            <span>상단 돋보기(+)로 화면 내 확대 가능 · 이미지 클릭 시 전체화면 · Ctrl+V 즉시 교체</span>
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 bg-white px-3 py-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="inline-flex items-center justify-center rounded bg-slate-800 px-1.5 py-0.5 font-mono text-[11px] font-semibold text-white tabular-nums shrink-0">
+                    {index + 1}번 사진
+                  </span>
+                  <span className="truncate max-w-[260px] text-xs font-medium text-slate-600">
+                    {asset.fileName}
+                  </span>
+                  <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[11px] text-slate-500 font-mono tabular-nums whitespace-nowrap shrink-0">
+                    {asset.width} × {asset.height}px
+                  </span>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-1 shrink-0">
+                  {assets.length > 1 && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={(e) => handleMove(e, index, -1)}
+                        disabled={index === 0 || isBusy}
+                        className="inline-flex items-center gap-0.5 rounded border border-slate-200 bg-white px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-35 cursor-pointer"
+                        title="순서 위로 이동"
+                      >
+                        <ArrowUp className="h-3.5 w-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => handleMove(e, index, 1)}
+                        disabled={index === assets.length - 1 || isBusy}
+                        className="inline-flex items-center gap-0.5 rounded border border-slate-200 bg-white px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-35 cursor-pointer"
+                        title="순서 아래로 이동"
+                      >
+                        <ArrowDown className="h-3.5 w-3.5" />
+                      </button>
+                    </>
+                  )}
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onFocusSlot();
+                      replaceIndexRef.current = index;
+                      replaceInputRef.current?.click();
+                    }}
+                    disabled={isBusy}
+                    className="inline-flex items-center gap-1 rounded border border-slate-200 bg-white px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 hover:text-slate-900 transition-colors whitespace-nowrap cursor-pointer disabled:opacity-50"
+                    title="이 사진 교체"
+                  >
+                    <RefreshCw className="h-3 w-3" />
+                    교체
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(e) => void handleRotateAt(e, index)}
+                    disabled={isBusy}
+                    className="inline-flex items-center gap-1 rounded border border-slate-200 bg-white px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 hover:text-slate-900 transition-colors whitespace-nowrap cursor-pointer disabled:opacity-50"
+                    title="시계방향 90도 회전"
+                  >
+                    <RotateCw className="h-3 w-3" />
+                    회전
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(e) => handleDeleteAt(e, index)}
+                    className="inline-flex items-center gap-1 rounded border border-slate-200 bg-white px-2 py-1 text-xs font-medium text-red-600 hover:bg-red-50 hover:border-red-200 transition-colors whitespace-nowrap cursor-pointer"
+                    title="이 사진 삭제"
+                  >
+                    <Trash2 className="h-3 w-3" />
+                    삭제
+                  </button>
+                </div>
+              </div>
+
+              <div className="group relative overflow-auto bg-slate-50">
+                <img
+                  src={asset.dataUrl}
+                  alt={`${slot.stepNumber}번 ${slot.headerLabel} ${index + 1}번째 첨부 이미지`}
+                  referrerPolicy="no-referrer"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onPreviewZoom(
+                      asset,
+                      assets.length > 1
+                        ? `${slot.stepNumber}. ${slot.headerLabel} (${index + 1}번 사진)`
+                        : `${slot.stepNumber}. ${slot.headerLabel}`
+                    );
+                  }}
+                  style={{
+                    width: `${previewScale}%`,
+                    maxWidth: previewScale > 100 ? 'none' : '100%',
+                  }}
+                  className="h-auto object-contain block cursor-zoom-in mx-auto"
+                />
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onPreviewZoom(
+                      asset,
+                      assets.length > 1
+                        ? `${slot.stepNumber}. ${slot.headerLabel} (${index + 1}번 사진)`
+                        : `${slot.stepNumber}. ${slot.headerLabel}`
+                    );
+                  }}
+                  className="sticky right-2.5 bottom-2.5 float-right m-2.5 inline-flex items-center gap-1 rounded-md bg-slate-900/85 px-3 py-1.5 text-xs font-medium text-white opacity-95 hover:opacity-100 transition-opacity cursor-pointer shadow-sm"
+                >
+                  <Maximize2 className="h-3.5 w-3.5" />
+                  전체화면 크게 보기
+                </button>
+              </div>
+            </div>
+          ))}
+
+          {/* Add another photo bar */}
+          <div
+            role="button"
+            tabIndex={0}
+            onClick={(e) => {
+              e.stopPropagation();
+              onFocusSlot();
+              fileInputRef.current?.click();
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                fileInputRef.current?.click();
+              }
+            }}
+            className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-dashed border-slate-300 bg-slate-50/70 px-4 py-3 text-xs text-slate-600 hover:border-blue-400 hover:bg-blue-50/30 transition-colors cursor-pointer"
+          >
+            <span className="inline-flex items-center gap-1.5 font-medium text-slate-700">
+              <Plus className="h-4 w-4 text-blue-600" />
+              사진 추가 ({assets.length + 1}번째 사진으로 순서대로 추가 · 드래그 또는 Ctrl+V 가능)
+            </span>
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onFocusSlot();
+                  fileInputRef.current?.click();
+                }}
+                className="inline-flex items-center gap-1 rounded border border-slate-200 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 cursor-pointer"
+              >
+                <FolderOpen className="h-3.5 w-3.5" />
+                파일 선택
+              </button>
+              <button
+                type="button"
+                onClick={handleClipboardButton}
+                className="inline-flex items-center gap-1 rounded border border-blue-200 bg-white px-2.5 py-1 text-xs font-medium text-blue-700 hover:bg-blue-50 cursor-pointer"
+              >
+                <ClipboardPaste className="h-3.5 w-3.5" />
+                붙여넣기
+              </button>
+            </div>
           </div>
         </div>
       ) : (
@@ -338,7 +536,7 @@ export const ImageSlotCard: React.FC<ImageSlotCardProps> = ({
             {slot.description}
           </p>
           <p className="mt-1 text-xs text-slate-500">
-            {slot.hint}
+            {slot.hint} · 여러 장을 순서대로 추가할 수 있습니다.
           </p>
           <div className="mt-5 flex flex-wrap items-center justify-center gap-2.5">
             <button

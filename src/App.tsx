@@ -47,10 +47,10 @@ function createEmptyClaim(): ClaimFormData {
     claimDate: getTodayDateString(),
     reasonText: '',
     images: {
-      packaging: null,
-      waybill: null,
-      smsSummary: null,
-      smsDetail: null,
+      packaging: [],
+      waybill: [],
+      smsSummary: [],
+      smsDetail: [],
     },
     createdAt: now,
     updatedAt: now,
@@ -127,16 +127,23 @@ export default function App() {
     }));
   };
 
-  const updateSlotImage = useCallback(
-    (key: ImageSlotKey, asset: ImageAsset | null) => {
-      setClaim((prev) => ({
-        ...prev,
-        images: {
-          ...prev.images,
-          [key]: asset,
-        },
-        updatedAt: Date.now(),
-      }));
+  const updateSlotImages = useCallback(
+    (
+      key: ImageSlotKey,
+      updater: ImageAsset[] | ((prev: ImageAsset[]) => ImageAsset[])
+    ) => {
+      setClaim((prev) => {
+        const nextAssets =
+          typeof updater === 'function' ? updater(prev.images[key]) : updater;
+        return {
+          ...prev,
+          images: {
+            ...prev.images,
+            [key]: nextAssets,
+          },
+          updatedAt: Date.now(),
+        };
+      });
     },
     []
   );
@@ -166,13 +173,16 @@ export default function App() {
           const file = item.getAsFile();
           if (!file) continue;
           e.preventDefault();
-          const firstEmpty = IMAGE_SLOTS.find((s) => !claim.images[s.key])?.key;
-          const destination = claim.images[activeSlot]
-            ? firstEmpty ?? activeSlot
-            : activeSlot;
+          const firstEmpty = IMAGE_SLOTS.find(
+            (s) => claim.images[s.key].length === 0
+          )?.key;
+          const destination =
+            claim.images[activeSlot].length > 0
+              ? (firstEmpty ?? activeSlot)
+              : activeSlot;
           try {
             const asset = await readImageFileAsAsset(file);
-            updateSlotImage(destination, asset);
+            updateSlotImages(destination, (prev) => [...prev, asset]);
             setActiveSlot(destination);
             const def = IMAGE_SLOTS.find((s) => s.key === destination);
             notify(
@@ -188,14 +198,18 @@ export default function App() {
 
     window.addEventListener('paste', handleGlobalPaste);
     return () => window.removeEventListener('paste', handleGlobalPaste);
-  }, [activeTab, activeSlot, claim.images, notify, updateSlotImage]);
+  }, [activeTab, activeSlot, claim.images, notify, updateSlotImages]);
 
-  const attachedCount = IMAGE_SLOTS.filter((s) => Boolean(claim.images[s.key])).length;
+  const attachedCount = IMAGE_SLOTS.reduce(
+    (sum, s) => sum + claim.images[s.key].length,
+    0
+  );
 
   const handleExportJpg = async (targetClaim: ClaimFormData = claim) => {
-    const targetImageCount = IMAGE_SLOTS.filter((s) =>
-      Boolean(targetClaim.images[s.key])
-    ).length;
+    const targetImageCount = IMAGE_SLOTS.reduce(
+      (sum, s) => sum + targetClaim.images[s.key].length,
+      0
+    );
     if (!targetClaim.reasonText.trim() && targetImageCount === 0) {
       notify('저장할 보상신청내용 또는 사진을 먼저 입력해 주세요.', 'error');
       return;
@@ -425,6 +439,27 @@ export default function App() {
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                     <div>
                       <label
+                        htmlFor="claim-date"
+                        className="block text-xs font-medium text-slate-700 mb-1"
+                      >
+                        날짜
+                      </label>
+                      <input
+                        id="claim-date"
+                        type="date"
+                        value={claim.claimDate || getTodayDateString()}
+                        onChange={(e) =>
+                          setClaim((prev) => ({
+                            ...prev,
+                            claimDate: e.target.value,
+                            updatedAt: Date.now(),
+                          }))
+                        }
+                        className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-blue-600 focus:outline-none"
+                      />
+                    </div>
+                    <div>
+                      <label
                         htmlFor="claim-title"
                         className="block text-xs font-medium text-slate-700 mb-1"
                       >
@@ -450,7 +485,7 @@ export default function App() {
                         htmlFor="claim-order-number"
                         className="block text-xs font-medium text-slate-700 mb-1"
                       >
-                        송장번호
+                        상품명
                       </label>
                       <input
                         id="claim-order-number"
@@ -463,29 +498,8 @@ export default function App() {
                             updatedAt: Date.now(),
                           }))
                         }
-                        placeholder="예: 12104202353764"
-                        className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 font-mono text-sm text-slate-900 placeholder:font-sans placeholder:text-slate-400 focus:border-blue-600 focus:outline-none"
-                      />
-                    </div>
-                    <div>
-                      <label
-                        htmlFor="claim-date"
-                        className="block text-xs font-medium text-slate-700 mb-1"
-                      >
-                        날짜
-                      </label>
-                      <input
-                        id="claim-date"
-                        type="date"
-                        value={claim.claimDate || getTodayDateString()}
-                        onChange={(e) =>
-                          setClaim((prev) => ({
-                            ...prev,
-                            claimDate: e.target.value,
-                            updatedAt: Date.now(),
-                          }))
-                        }
-                        className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-blue-600 focus:outline-none"
+                        placeholder="상품명을 입력하세요"
+                        className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none"
                       />
                     </div>
                   </div>
@@ -562,10 +576,10 @@ export default function App() {
                   <ImageSlotCard
                     key={slot.key}
                     slot={slot}
-                    asset={claim.images[slot.key]}
+                    assets={claim.images[slot.key]}
                     isActive={activeSlot === slot.key}
                     onFocusSlot={() => setActiveSlot(slot.key)}
-                    onChange={(asset) => updateSlotImage(slot.key, asset)}
+                    onChange={(updater) => updateSlotImages(slot.key, updater)}
                     onPreviewZoom={(asset, label) => setZoomedImage({ asset, label })}
                     onNotify={notify}
                   />

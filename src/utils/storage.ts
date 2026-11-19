@@ -1,4 +1,4 @@
-import { ClaimFormData } from '../types/claim';
+import { ClaimFormData, normalizeClaimFormData } from '../types/claim';
 
 const DB_NAME = 'coupang-compensation-db';
 const DB_VERSION = 1;
@@ -52,7 +52,7 @@ export async function loadActiveDraft(): Promise<ClaimFormData | null> {
       req.onerror = () => reject(req.error);
     });
     db.close();
-    return result;
+    return result ? normalizeClaimFormData(result) : null;
   } catch {
     return null;
   }
@@ -79,7 +79,9 @@ export async function listClaimRecords(): Promise<ClaimFormData[]> {
       req.onerror = () => reject(req.error);
     });
     db.close();
-    return records.sort((a, b) => b.updatedAt - a.updatedAt);
+    return records
+      .map((record) => normalizeClaimFormData(record))
+      .sort((a, b) => b.updatedAt - a.updatedAt);
   } catch {
     return [];
   }

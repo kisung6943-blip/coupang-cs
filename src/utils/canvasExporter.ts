@@ -1,4 +1,9 @@
-import { ClaimFormData, IMAGE_SLOTS, ImageAsset } from '../types/claim';
+import {
+  ClaimFormData,
+  IMAGE_SLOTS,
+  ImageAsset,
+  normalizeSlotImages,
+} from '../types/claim';
 
 export type ExportImageFormat = 'image/jpeg' | 'image/png';
 
@@ -110,6 +115,7 @@ export async function renderClaimCanvas(
   const headerPadY = 10;
   const headerHeight = 54;
   const headerToContentGap = 22;
+  const imageStackGap = 20;
   const sectionGap = 40;
   const lineHeight = 42;
 
@@ -125,22 +131,24 @@ export async function renderClaimCanvas(
   const reasonLines = wrapTextLines(measureCtx, reasonContent, contentWidth - 8);
   const reasonBlockHeight = reasonLines.length * lineHeight;
 
-  // Preload all present images
-  const loadedImages: Record<string, LoadedImage | null> = {};
+  // Preload all present images in order
+  const loadedImages: Record<string, LoadedImage[]> = {};
   for (const slot of IMAGE_SLOTS) {
-    const asset = claim.images[slot.key];
-    if (asset?.dataUrl) {
-      const element = await loadImage(asset.dataUrl);
-      const dims = getRotatedDimensions(asset, contentWidth);
-      loadedImages[slot.key] = {
-        element,
-        asset,
-        drawWidth: dims.drawWidth,
-        drawHeight: dims.drawHeight,
-      };
-    } else {
-      loadedImages[slot.key] = null;
+    const assets = normalizeSlotImages(claim.images[slot.key]);
+    const list: LoadedImage[] = [];
+    for (const asset of assets) {
+      if (asset?.dataUrl) {
+        const element = await loadImage(asset.dataUrl);
+        const dims = getRotatedDimensions(asset, contentWidth);
+        list.push({
+          element,
+          asset,
+          drawWidth: dims.drawWidth,
+          drawHeight: dims.drawHeight,
+        });
+      }
     }
+    loadedImages[slot.key] = list;
   }
 
   // Compute total height
@@ -149,12 +157,21 @@ export async function renderClaimCanvas(
   totalHeight += headerHeight + headerToContentGap + reasonBlockHeight + sectionGap;
 
   for (const slot of IMAGE_SLOTS) {
-    const loaded = loadedImages[slot.key];
-    if (!loaded && !includeEmpty) {
+    const loadedList = loadedImages[slot.key] ?? [];
+    if (loadedList.length === 0 && !includeEmpty) {
       continue;
     }
     totalHeight += headerHeight + headerToContentGap;
-    totalHeight += loaded ? loaded.drawHeight : 88;
+    if (loadedList.length > 0) {
+      for (let i = 0; i < loadedList.length; i++) {
+        totalHeight += loadedList[i].drawHeight;
+        if (i < loadedList.length - 1) {
+          totalHeight += imageStackGap;
+        }
+      }
+    } else {
+      totalHeight += 88;
+    }
     totalHeight += sectionGap;
   }
 
@@ -201,28 +218,35 @@ export async function renderClaimCanvas(
   }
   cursorY += reasonBlockHeight + sectionGap;
 
-  // Sections 2~5: Images
+  // Sections 2~5: Images (in sequential order)
   for (const slot of IMAGE_SLOTS) {
-    const loaded = loadedImages[slot.key];
-    if (!loaded && !includeEmpty) {
+    const loadedList = loadedImages[slot.key] ?? [];
+    if (loadedList.length === 0 && !includeEmpty) {
       continue;
     }
 
     drawSectionHeader(slot.headerLabel, cursorY);
     cursorY += headerHeight + headerToContentGap;
 
-    if (loaded) {
-      const offsetX = paddingX + Math.round((contentWidth - loaded.drawWidth) / 2);
-      drawRotatedImage(
-        ctx,
-        loaded.element,
-        loaded.asset.rotation,
-        offsetX,
-        cursorY,
-        loaded.drawWidth,
-        loaded.drawHeight
-      );
-      cursorY += loaded.drawHeight + sectionGap;
+    if (loadedList.length > 0) {
+      for (let i = 0; i < loadedList.length; i++) {
+        const loaded = loadedList[i];
+        const offsetX = paddingX + Math.round((contentWidth - loaded.drawWidth) / 2);
+        drawRotatedImage(
+          ctx,
+          loaded.element,
+          loaded.asset.rotation,
+          offsetX,
+          cursorY,
+          loaded.drawWidth,
+          loaded.drawHeight
+        );
+        cursorY += loaded.drawHeight;
+        if (i < loadedList.length - 1) {
+          cursorY += imageStackGap;
+        }
+      }
+      cursorY += sectionGap;
     } else {
       ctx.save();
       ctx.strokeStyle = '#CBD5E1';
@@ -262,9 +286,10 @@ export function formatKoreanDate(dateStr?: string): string {
 }
 
 export function getDefaultFileNameBase(claim: ClaimFormData): string {
-  const namePart = claim.title.trim();
   const datePart = formatKoreanDate(claim.claimDate);
-  const rawBase = namePart ? `${namePart}. ${datePart}` : datePart;
+  const namePart = claim.title.trim();
+  const productPart = claim.orderNumber.trim();
+  const rawBase = [datePart, namePart, productPart].filter(Boolean).join('_');
   return rawBase.replace(/[\\/:*?"<>|]/g, '_').trim();
 }
 

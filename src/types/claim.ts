@@ -15,9 +15,35 @@ export interface ClaimFormData {
   orderNumber: string;
   claimDate?: string;
   reasonText: string;
-  images: Record<ImageSlotKey, ImageAsset | null>;
+  images: Record<ImageSlotKey, ImageAsset[]>;
   updatedAt: number;
   createdAt: number;
+}
+
+export function normalizeSlotImages(value: unknown): ImageAsset[] {
+  if (Array.isArray(value)) {
+    return value.filter(
+      (item): item is ImageAsset =>
+        Boolean(item) && typeof item === 'object' && typeof (item as ImageAsset).dataUrl === 'string'
+    );
+  }
+  if (value && typeof value === 'object' && typeof (value as ImageAsset).dataUrl === 'string') {
+    return [value as ImageAsset];
+  }
+  return [];
+}
+
+export function normalizeClaimFormData(raw: ClaimFormData): ClaimFormData {
+  const rawImages = (raw.images ?? {}) as Record<string, unknown>;
+  return {
+    ...raw,
+    images: {
+      packaging: normalizeSlotImages(rawImages.packaging),
+      waybill: normalizeSlotImages(rawImages.waybill),
+      smsSummary: normalizeSlotImages(rawImages.smsSummary),
+      smsDetail: normalizeSlotImages(rawImages.smsDetail),
+    },
+  };
 }
 
 export interface SlotDefinition {
